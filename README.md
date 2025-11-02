@@ -113,9 +113,9 @@ npm run dev
 
 ## 📞 Support
 
-**Author**: Sayan Shubro  
+**Author**: Sayandeep  
 **GitHub**: [shubro18202758](https://github.com/shubro18202758)
-**Email**: support@aura-health.com
+**Email**: sayandeephaldar050405@gmail.com 
 
 ## 📝 License
 
