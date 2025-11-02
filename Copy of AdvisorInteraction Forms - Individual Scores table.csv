@@ -1,0 +1,10 @@
+ Service Types,Total number of records where the serviceType is correctly classified,% Classification,Accuracy (%)
+Health Query,37,39,94.87
+Appointment Booking,29,30,96.67
+Attachment shared by Patient,20,20,100
+Attachment shared by MA,12,12,100
+Phlebotomy,5,5,100
+Insurance,9,9,100
+Tech,6,6,100
+Blank Chat,3,3,100
+Customer Experience,0,0,0

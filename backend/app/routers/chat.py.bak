@@ -1,0 +1,902 @@
+"""from fastapi import APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect
+
+Chat Router for AURA Healthcare Systemfrom fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+Handles real-time messaging, conversation management, and AI-powered responsesfrom typing import List, Dict, Any
+
+"""import json
+
+import asyncio
+
+from datetime import datetimefrom datetime import datetime
+
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, statusfrom app.core.conversation_manager import ConversationManager
+
+from pydantic import BaseModelfrom app.core.rag_engine import RAGEngine
+
+import jsonfrom app.services.nlp_service import NLPService
+
+from app.models.conversation import ConversationSession, ChatMessage, ChatResponse
+
+from app.config import get_settingsfrom app.utils.security import verify_token
+
+from app.database import get_database
+
+from app.models import User, Rolerouter = APIRouter()
+
+from app.models.conversation import Message, Conversation, MessageRole, ConversationStatussecurity = HTTPBearer()
+
+from app.routers.auth import get_current_active_user, require_role
+
+# WebSocket connection manager
+
+# Try to import AI servicesclass ConnectionManager:
+
+try:    def __init__(self):
+
+    from app.core import conversation_manager        self.active_conversations: Dict[str, WebSocket] = {}
+
+    AI_AVAILABLE = True        
+
+except ImportError:    async def connect(self, websocket: WebSocket, conversation_id: str):
+
+    AI_AVAILABLE = False        await websocket.accept()
+
+        self.active_conversations[conversation_id] = websocket
+
+router = APIRouter(prefix="/api/chat", tags=["chat"])        
+
+settings = get_settings()    def disconnect(self, conversation_id: str):
+
+        if conversation_id in self.active_conversations:
+
+# WebSocket connection manager            del self.active_conversations[conversation_id]
+
+class ConnectionManager:            
+
+    def __init__(self):    async def send_message(self, conversation_id: str, message: dict):
+
+        self.active_connections: dict[str, WebSocket] = {}        if conversation_id in self.active_conversations:
+
+                websocket = self.active_conversations[conversation_id]
+
+    async def connect(self, conversation_id: str, websocket: WebSocket):            await websocket.send_text(json.dumps(message))
+
+        await websocket.accept()
+
+        self.active_connections[conversation_id] = websocketmanager = ConnectionManager()
+
+    
+
+    def disconnect(self, conversation_id: str):@router.websocket("/ws/{conversation_id}")
+
+        if conversation_id in self.active_connections:async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
+
+            del self.active_connections[conversation_id]    """WebSocket endpoint for real-time chat"""
+
+        await manager.connect(websocket, conversation_id)
+
+    async def send_message(self, conversation_id: str, message: dict):    
+
+        if conversation_id in self.active_connections:    try:
+
+            websocket = self.active_connections[conversation_id]        while True:
+
+            await websocket.send_json(message)            # Receive message from client
+
+                data = await websocket.receive_text()
+
+    async def broadcast(self, conversation_id: str, message: dict):            message_data = json.loads(data)
+
+        """Send message to all participants in conversation"""            
+
+        await self.send_message(conversation_id, message)            # Process message through AI
+
+            response = await process_chat_message(
+
+manager = ConnectionManager()                conversation_id=conversation_id,
+
+                message=message_data["message"],
+
+# Request/Response Models                message_type=message_data.get("type", "text")
+
+class SendMessageRequest(BaseModel):            )
+
+    conversation_id: Optional[str] = None            
+
+    message: str            # Send response back
+
+    language: Optional[str] = "en"            await manager.send_message(conversation_id, response)
+
+    attachments: Optional[List[str]] = None            
+
+    except WebSocketDisconnect:
+
+class SendMessageResponse(BaseModel):        manager.disconnect(conversation_id)
+
+    message_id: str        print(f"Chat connection closed: {conversation_id}")
+
+    conversation_id: str
+
+    message: Messageasync def process_chat_message(conversation_id: str, message: str, message_type: str = "text") -> Dict[str, Any]:
+
+    ai_response: Optional[Message] = None    """Process chat message through AI pipeline"""
+
+    try:
+
+class ConversationCreateRequest(BaseModel):        # Get conversation manager from app state
+
+    patient_id: str        from app.main import app
+
+    language: str = "en"        conversation_manager: ConversationManager = app.state.conversation_manager
+
+    initial_message: Optional[str] = None        
+
+        # Process the message
+
+class ConversationResponse(BaseModel):        if message_type == "response":
+
+    conversation: Conversation            # Patient responding to a question
+
+    messages: List[Message]            result = await conversation_manager.process_response(conversation_id, message)
+
+            
+
+class HandoffRequest(BaseModel):            if result["next_available"]:
+
+    conversation_id: str                next_question = await conversation_manager.get_next_question(conversation_id)
+
+    doctor_id: str                return {
+
+    reason: Optional[str] = None                    "type": "question",
+
+                    "content": next_question["question"],
+
+# Helper functions                    "question_id": next_question["question_id"],
+
+async def get_or_create_conversation(                    "is_followup": next_question["is_followup"],
+
+    patient_id: str,                    "progress": next_question["progress"],
+
+    language: str = "en",                    "timestamp": datetime.now().isoformat()
+
+    initial_message: Optional[str] = None                }
+
+) -> Conversation:            else:
+
+    """Get existing active conversation or create new one"""                # Conversation complete, generate summary
+
+    db = await get_database()                summary = await conversation_manager.generate_summary(conversation_id)
+
+                    return {
+
+    # Check for existing active conversation                    "type": "summary",
+
+    existing = await db.conversations.find_one({                    "content": "Thank you for providing all the information. Your responses have been compiled for the doctor.",
+
+        "patient_id": patient_id,                    "summary": summary,
+
+        "status": {"$in": ["active", "waiting"]}                    "timestamp": datetime.now().isoformat()
+
+    })                }
+
+            
+
+    if existing:        elif message_type == "question":
+
+        return Conversation(**existing)            # General question from patient
+
+                rag_engine: RAGEngine = app.state.rag_engine
+
+    # Create new conversation            result = await rag_engine.query(message)
+
+    conversation = Conversation(            
+
+        conversation_id=f"conv_{datetime.utcnow().timestamp()}_{patient_id}",            return {
+
+        patient_id=patient_id,                "type": "answer",
+
+        language=language,                "content": result["answer"],
+
+        started_at=datetime.utcnow(),                "confidence": result["confidence"],
+
+        status=ConversationStatus.ACTIVE                "sources": result["sources"],
+
+    )                "timestamp": datetime.now().isoformat()
+
+                }
+
+    await db.conversations.insert_one(conversation.dict())        
+
+            else:
+
+    # Start conversation in AI manager if available            return {
+
+    if AI_AVAILABLE and conversation_manager:                "type": "error",
+
+        await conversation_manager.start_conversation(                "content": "Unknown message type",
+
+            conversation.conversation_id,                "timestamp": datetime.now().isoformat()
+
+            patient_id,            }
+
+            language            
+
+        )    except Exception as e:
+
+            print(f"Error processing chat message: {e}")
+
+    return conversation        return {
+
+            "type": "error",
+
+async def generate_ai_response(            "content": "I apologize, but I encountered an error. Please try again or contact support.",
+
+    conversation_id: str,            "timestamp": datetime.now().isoformat()
+
+    user_message: str,        }
+
+    language: str = "en"
+
+) -> Optional[Message]:@router.post("/start-conversation")
+
+    """Generate AI response to user message"""async def start_conversation(
+
+    if not AI_AVAILABLE or not conversation_manager:    patient_id: str,
+
+        return None    specialty: str,
+
+        doctor_questions: List[str],
+
+    try:    credentials: HTTPAuthorizationCredentials = Depends(security)
+
+        # Get AI response):
+
+        ai_text = await conversation_manager.get_ai_response(    """Start a new patient conversation session"""
+
+            conversation_id,    try:
+
+            user_message,        # Verify token
+
+            language        payload = verify_token(credentials.credentials)
+
+        )        
+
+                # Get conversation manager
+
+        if not ai_text:        from app.main import app
+
+            return None        conversation_manager: ConversationManager = app.state.conversation_manager
+
+                
+
+        # Create AI message        # Start conversation
+
+        ai_message = Message(        conversation_id = await conversation_manager.start_conversation(
+
+            message_id=f"msg_{datetime.utcnow().timestamp()}",            patient_id=patient_id,
+
+            conversation_id=conversation_id,            specialty=specialty,
+
+            role=MessageRole.AI,            initial_questions=doctor_questions
+
+            content=ai_text,        )
+
+            timestamp=datetime.utcnow(),        
+
+            language=language        # Get first question
+
+        )        first_question = await conversation_manager.get_next_question(conversation_id)
+
+                
+
+        # Store in database        return {
+
+        db = await get_database()            "conversation_id": conversation_id,
+
+        await db.messages.insert_one(ai_message.dict())            "first_question": first_question,
+
+                    "status": "started"
+
+        # Add to conversation manager        }
+
+        await conversation_manager.add_message(        
+
+            conversation_id,    except Exception as e:
+
+            ai_message.content,        raise HTTPException(status_code=500, detail=str(e))
+
+            MessageRole.AI
+
+        )@router.get("/conversation/{conversation_id}/status")
+
+        async def get_conversation_status(
+
+        return ai_message    conversation_id: str,
+
+            credentials: HTTPAuthorizationCredentials = Depends(security)
+
+    except Exception as e:):
+
+        print(f"❌ AI response generation failed: {e}")    """Get conversation status and progress"""
+
+        return None    try:
+
+        # Verify token
+
+# Routes        payload = verify_token(credentials.credentials)
+
+@router.post("/conversations", response_model=ConversationResponse)        
+
+async def create_conversation(        from app.main import app
+
+    request: ConversationCreateRequest,        conversation_manager: ConversationManager = app.state.conversation_manager
+
+    current_user: User = Depends(get_current_active_user)        
+
+):        if conversation_id not in conversation_manager.conversations:
+
+    """            raise HTTPException(status_code=404, detail="Conversation not found")
+
+    Create new conversation        
+
+            conv = conversation_manager.conversations[conversation_id]
+
+    - Patients can create conversations for themselves        
+
+    - Doctors/admins can create for any patient        return {
+
+    - Returns conversation with initial AI greeting            "conversation_id": conversation_id,
+
+    """            "patient_id": conv["patient_id"],
+
+    # Verify permissions            "specialty": conv["specialty"],
+
+    if current_user.role == Role.PATIENT and current_user.user_id != request.patient_id:            "progress": conv["current_question"] / len(conv["questions"]),
+
+        raise HTTPException(            "total_questions": len(conv["questions"]),
+
+            status_code=status.HTTP_403_FORBIDDEN,            "answered_questions": len(conv["responses"]),
+
+            detail="Cannot create conversation for another patient"            "status": "completed" if conv["current_question"] >= len(conv["questions"]) else "in_progress"
+
+        )        }
+
+            
+
+    # Create conversation    except HTTPException:
+
+    conversation = await get_or_create_conversation(        raise
+
+        request.patient_id,    except Exception as e:
+
+        request.language,        raise HTTPException(status_code=500, detail=str(e))
+
+        request.initial_message
+
+    )@router.post("/conversation/{conversation_id}/upload-document")
+
+    async def upload_document(
+
+    # Get messages    conversation_id: str,
+
+    db = await get_database()    file_content: str,
+
+    messages_data = await db.messages.find({    file_type: str,
+
+        "conversation_id": conversation.conversation_id    credentials: HTTPAuthorizationCredentials = Depends(security)
+
+    }).sort("timestamp", 1).to_list(None)):
+
+        """Upload and process medical documents during conversation"""
+
+    messages = [Message(**msg) for msg in messages_data]    try:
+
+            # Verify token
+
+    # Generate initial AI greeting if no messages        payload = verify_token(credentials.credentials)
+
+    if not messages and AI_AVAILABLE:        
+
+        greeting = await generate_ai_response(        from app.main import app
+
+            conversation.conversation_id,        nlp_service: NLPService = app.state.nlp_service
+
+            request.initial_message or "Hello",        
+
+            request.language        # Process document
+
+        )        extracted_info = await nlp_service.process_medical_document(
+
+        if greeting:            content=file_content,
+
+            messages.append(greeting)            document_type=file_type
+
+            )
+
+    return ConversationResponse(        
+
+        conversation=conversation,        # Add to conversation context
+
+        messages=messages        conversation_manager: ConversationManager = app.state.conversation_manager
+
+    )        if conversation_id in conversation_manager.conversations:
+
+            conv = conversation_manager.conversations[conversation_id]
+
+@router.get("/conversations/{conversation_id}", response_model=ConversationResponse)            conv["medical_history"].append({
+
+async def get_conversation(                "document_type": file_type,
+
+    conversation_id: str,                "extracted_info": extracted_info,
+
+    current_user: User = Depends(get_current_active_user)                "timestamp": datetime.now().isoformat()
+
+):            })
+
+    """        
+
+    Get conversation by ID        return {
+
+                "status": "processed",
+
+    - Returns conversation details and all messages            "extracted_entities": extracted_info["entities"],
+
+    - Patients can only access their own conversations            "key_findings": extracted_info["summary"]
+
+    """        }
+
+    db = await get_database()        
+
+        except Exception as e:
+
+    # Get conversation        raise HTTPException(status_code=500, detail=str(e))
+
+    conv_data = await db.conversations.find_one({"conversation_id": conversation_id})
+
+    if not conv_data:@router.get("/conversation/{conversation_id}/summary")
+
+        raise HTTPException(async def get_conversation_summary(
+
+            status_code=status.HTTP_404_NOT_FOUND,    conversation_id: str,
+
+            detail="Conversation not found"    credentials: HTTPAuthorizationCredentials = Depends(security)
+
+        )):
+
+        """Get detailed conversation summary for doctor review"""
+
+    conversation = Conversation(**conv_data)    try:
+
+            # Verify token
+
+    # Verify permissions        payload = verify_token(credentials.credentials)
+
+    if current_user.role == Role.PATIENT:        
+
+        if conversation.patient_id != current_user.user_id:        from app.main import app
+
+            raise HTTPException(        conversation_manager: ConversationManager = app.state.conversation_manager
+
+                status_code=status.HTTP_403_FORBIDDEN,        
+
+                detail="Cannot access another patient's conversation"        summary = await conversation_manager.generate_summary(conversation_id)
+
+            )        
+
+            return summary
+
+    # Get messages        
+
+    messages_data = await db.messages.find({    except Exception as e:
+
+        "conversation_id": conversation_id        raise HTTPException(status_code=500, detail=str(e))
+
+    }).sort("timestamp", 1).to_list(None)
+
+    @router.post("/ask-ai")
+
+    messages = [Message(**msg) for msg in messages_data]async def ask_ai_question(
+
+        question: str,
+
+    return ConversationResponse(    context: str = "",
+
+        conversation=conversation,    credentials: HTTPAuthorizationCredentials = Depends(security)
+
+        messages=messages):
+
+    )    """Direct AI question for doctors"""
+
+    try:
+
+@router.get("/conversations", response_model=List[Conversation])        # Verify token
+
+async def list_conversations(        payload = verify_token(credentials.credentials)
+
+    current_user: User = Depends(get_current_active_user),        
+
+    status: Optional[str] = None,        from app.main import app
+
+    limit: int = 50        rag_engine: RAGEngine = app.state.rag_engine
+
+):        
+
+    """        result = await rag_engine.query(question, context)
+
+    List conversations        
+
+            return {
+
+    - Patients see their own conversations            "question": question,
+
+    - Doctors see assigned conversations            "answer": result["answer"],
+
+    - Admins see all conversations            "confidence": result["confidence"],
+
+    """            "sources": result["sources"],
+
+    db = await get_database()            "timestamp": datetime.now().isoformat()
+
+            }
+
+    # Build query based on role        
+
+    query = {}    except Exception as e:
+
+            raise HTTPException(status_code=500, detail=str(e))
+    if current_user.role == Role.PATIENT:
+        query["patient_id"] = current_user.user_id
+    elif current_user.role == Role.DOCTOR:
+        query["doctor_id"] = current_user.user_id
+    
+    if status:
+        query["status"] = status
+    
+    # Get conversations
+    conversations_data = await db.conversations.find(query).sort(
+        "started_at", -1
+    ).limit(limit).to_list(None)
+    
+    return [Conversation(**conv) for conv in conversations_data]
+
+@router.post("/send", response_model=SendMessageResponse)
+async def send_message(
+    request: SendMessageRequest,
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Send message in conversation
+    
+    - Creates conversation if needed
+    - Generates AI response automatically
+    - Supports attachments
+    """
+    db = await get_database()
+    
+    # Get or create conversation
+    if request.conversation_id:
+        conv_data = await db.conversations.find_one({
+            "conversation_id": request.conversation_id
+        })
+        if not conv_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conversation not found"
+            )
+        conversation = Conversation(**conv_data)
+    else:
+        # Create new conversation for patient
+        if current_user.role != Role.PATIENT:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="conversation_id required for non-patient users"
+            )
+        conversation = await get_or_create_conversation(
+            current_user.user_id,
+            request.language
+        )
+    
+    # Verify permissions
+    if current_user.role == Role.PATIENT:
+        if conversation.patient_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot send message in another patient's conversation"
+            )
+    
+    # Create user message
+    user_message = Message(
+        message_id=f"msg_{datetime.utcnow().timestamp()}",
+        conversation_id=conversation.conversation_id,
+        role=MessageRole.USER if current_user.role == Role.PATIENT else MessageRole.DOCTOR,
+        content=request.message,
+        timestamp=datetime.utcnow(),
+        language=request.language or conversation.language,
+        sender_id=current_user.user_id,
+        attachments=request.attachments
+    )
+    
+    # Store message
+    await db.messages.insert_one(user_message.dict())
+    
+    # Update conversation
+    await db.conversations.update_one(
+        {"conversation_id": conversation.conversation_id},
+        {
+            "$set": {"last_message_at": datetime.utcnow()},
+            "$inc": {"message_count": 1}
+        }
+    )
+    
+    # Add to conversation manager
+    if AI_AVAILABLE and conversation_manager:
+        await conversation_manager.add_message(
+            conversation.conversation_id,
+            user_message.content,
+            user_message.role
+        )
+    
+    # Generate AI response if conversation is active and message is from patient
+    ai_response = None
+    if conversation.status == ConversationStatus.ACTIVE and current_user.role == Role.PATIENT:
+        ai_response = await generate_ai_response(
+            conversation.conversation_id,
+            request.message,
+            request.language or conversation.language
+        )
+        
+        if ai_response:
+            # Update message count
+            await db.conversations.update_one(
+                {"conversation_id": conversation.conversation_id},
+                {"$inc": {"message_count": 1}}
+            )
+            
+            # Send via WebSocket if connected
+            await manager.send_message(conversation.conversation_id, {
+                "type": "message",
+                "message": ai_response.dict()
+            })
+    
+    return SendMessageResponse(
+        message_id=user_message.message_id,
+        conversation_id=conversation.conversation_id,
+        message=user_message,
+        ai_response=ai_response
+    )
+
+@router.post("/handoff", response_model=Conversation)
+async def handoff_to_doctor(
+    request: HandoffRequest,
+    current_user: User = Depends(require_role(Role.DOCTOR))
+):
+    """
+    Handoff conversation to doctor
+    
+    - Transfers AI conversation to human doctor
+    - Updates conversation status
+    - Notifies patient
+    """
+    db = await get_database()
+    
+    # Get conversation
+    conv_data = await db.conversations.find_one({
+        "conversation_id": request.conversation_id
+    })
+    if not conv_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found"
+        )
+    
+    # Update conversation
+    update_data = {
+        "status": ConversationStatus.WITH_DOCTOR,
+        "doctor_id": request.doctor_id,
+        "handoff_at": datetime.utcnow()
+    }
+    
+    if request.reason:
+        update_data["handoff_reason"] = request.reason
+    
+    await db.conversations.update_one(
+        {"conversation_id": request.conversation_id},
+        {"$set": update_data}
+    )
+    
+    # Handoff in conversation manager
+    if AI_AVAILABLE and conversation_manager:
+        await conversation_manager.handoff_to_doctor(
+            request.conversation_id,
+            request.doctor_id,
+            request.reason
+        )
+    
+    # Send handoff notification via WebSocket
+    await manager.send_message(request.conversation_id, {
+        "type": "handoff",
+        "doctor_id": request.doctor_id,
+        "message": f"Conversation transferred to Dr. {request.doctor_id}"
+    })
+    
+    # Get updated conversation
+    conv_data = await db.conversations.find_one({
+        "conversation_id": request.conversation_id
+    })
+    
+    return Conversation(**conv_data)
+
+@router.post("/end/{conversation_id}")
+async def end_conversation(
+    conversation_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    End conversation
+    
+    - Marks conversation as completed
+    - Generates summary
+    """
+    db = await get_database()
+    
+    # Get conversation
+    conv_data = await db.conversations.find_one({
+        "conversation_id": conversation_id
+    })
+    if not conv_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found"
+        )
+    
+    conversation = Conversation(**conv_data)
+    
+    # Verify permissions
+    if current_user.role == Role.PATIENT:
+        if conversation.patient_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot end another patient's conversation"
+            )
+    
+    # Update conversation
+    await db.conversations.update_one(
+        {"conversation_id": conversation_id},
+        {
+            "$set": {
+                "status": ConversationStatus.COMPLETED,
+                "ended_at": datetime.utcnow()
+            }
+        }
+    )
+    
+    # End in conversation manager
+    if AI_AVAILABLE and conversation_manager:
+        await conversation_manager.end_conversation(conversation_id)
+    
+    return {"message": "Conversation ended", "conversation_id": conversation_id}
+
+# WebSocket endpoint
+@router.websocket("/ws/{conversation_id}")
+async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
+    """
+    WebSocket endpoint for real-time chat
+    
+    - Maintains persistent connection
+    - Sends/receives messages in real-time
+    - Handles AI responses automatically
+    """
+    await manager.connect(conversation_id, websocket)
+    
+    try:
+        # Send connection confirmation
+        await websocket.send_json({
+            "type": "connected",
+            "conversation_id": conversation_id,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
+        while True:
+            # Receive message
+            data = await websocket.receive_text()
+            message_data = json.loads(data)
+            
+            # Handle different message types
+            if message_data.get("type") == "message":
+                # Store message
+                db = await get_database()
+                
+                user_message = Message(
+                    message_id=f"msg_{datetime.utcnow().timestamp()}",
+                    conversation_id=conversation_id,
+                    role=MessageRole.USER,
+                    content=message_data.get("content"),
+                    timestamp=datetime.utcnow(),
+                    language=message_data.get("language", "en"),
+                    sender_id=message_data.get("sender_id")
+                )
+                
+                await db.messages.insert_one(user_message.dict())
+                
+                # Echo message back
+                await websocket.send_json({
+                    "type": "message",
+                    "message": user_message.dict()
+                })
+                
+                # Generate AI response
+                ai_response = await generate_ai_response(
+                    conversation_id,
+                    user_message.content,
+                    user_message.language
+                )
+                
+                if ai_response:
+                    await websocket.send_json({
+                        "type": "message",
+                        "message": ai_response.dict()
+                    })
+            
+            elif message_data.get("type") == "typing":
+                # Broadcast typing indicator
+                await manager.broadcast(conversation_id, {
+                    "type": "typing",
+                    "user_id": message_data.get("user_id"),
+                    "is_typing": message_data.get("is_typing")
+                })
+    
+    except WebSocketDisconnect:
+        manager.disconnect(conversation_id)
+        print(f"WebSocket disconnected: {conversation_id}")
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        manager.disconnect(conversation_id)
+
+@router.get("/history/{conversation_id}", response_model=List[Message])
+async def get_conversation_history(
+    conversation_id: str,
+    current_user: User = Depends(get_current_active_user),
+    limit: int = 100,
+    before: Optional[str] = None
+):
+    """
+    Get conversation message history
+    
+    - Returns paginated messages
+    - Supports infinite scroll with 'before' parameter
+    """
+    db = await get_database()
+    
+    # Verify access
+    conv_data = await db.conversations.find_one({
+        "conversation_id": conversation_id
+    })
+    if not conv_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found"
+        )
+    
+    conversation = Conversation(**conv_data)
+    
+    if current_user.role == Role.PATIENT:
+        if conversation.patient_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot access another patient's conversation"
+            )
+    
+    # Build query
+    query = {"conversation_id": conversation_id}
+    if before:
+        query["message_id"] = {"$lt": before}
+    
+    # Get messages
+    messages_data = await db.messages.find(query).sort(
+        "timestamp", -1
+    ).limit(limit).to_list(None)
+    
+    return [Message(**msg) for msg in messages_data]
